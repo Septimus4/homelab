@@ -1,0 +1,197 @@
+# public-applications stack — yopass, rustdesk relay, stirling-pdf, memcached, world-cup-pool
+# Reconstructed 2026-06-18 from running containers. All on the shared infra_default network.
+# Deploy with: docker compose -p public-applications --env-file stacks/public-applications/.env \
+#   -f stacks/public-applications/compose.yaml up -d
+
+networks:
+  infra_default:
+    external: true
+
+volumes:
+  public-applications_rustdesk_data:
+    external: true
+  public-applications_stirling_configs:
+    external: true
+  public-applications_stirling_custom:
+    external: true
+  public-applications_stirling_logs:
+    external: true
+  public-applications_stirling_pipeline:
+    external: true
+  public-applications_stirling_tessdata:
+    external: true
+  public-applications_world_cup_pool_pb_data:
+    external: true
+
+services:
+  memcached:
+    image: memcached:latest
+    container_name: memcached
+    restart: unless-stopped
+    networks: [infra_default]
+
+  yopass:
+    image: jhaals/yopass:latest
+    container_name: yopass
+    restart: unless-stopped
+    networks: [infra_default]
+    depends_on:
+      - memcached
+    command: ["--memcached=memcached:11211", "--port", "80"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.yopass.rule=Host(`secrets.${DOMAIN}`)
+      - traefik.http.routers.yopass.entrypoints=websecure
+      - traefik.http.routers.yopass.middlewares=fail2ban@docker,hsts@docker,yopass-sec-headers,yopass-rate,yopass-compress,yopass-retry
+      - traefik.http.routers.yopass.tls=true
+      - traefik.http.routers.yopass.tls.certresolver=le
+      - traefik.http.services.yopass.loadbalancer.passHostHeader=true
+      - traefik.http.services.yopass.loadbalancer.server.port=80
+      - traefik.http.middlewares.yopass-compress.compress=true
+      - traefik.http.middlewares.yopass-rate.ratelimit.average=25
+      - traefik.http.middlewares.yopass-rate.ratelimit.burst=50
+      - traefik.http.middlewares.yopass-retry.retry.attempts=3
+      - traefik.http.middlewares.yopass-sec-headers.headers.browserXssFilter=true
+      - traefik.http.middlewares.yopass-sec-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.yopass-sec-headers.headers.frameDeny=true
+      - traefik.http.middlewares.yopass-sec-headers.headers.permissionsPolicy=geolocation=(), microphone=(), camera=()
+      - traefik.http.middlewares.yopass-sec-headers.headers.referrerPolicy=no-referrer
+      - traefik.http.middlewares.yopass-sec-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.yopass-sec-headers.headers.stsPreload=true
+      - traefik.http.middlewares.yopass-sec-headers.headers.stsSeconds=31536000
+
+  rustdesk-hbbs:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbs
+    restart: unless-stopped
+    networks: [infra_default]
+    command: ["hbbs", "-r", "rustdesk-hbbr:21117"]
+    environment:
+      HBBS_RELAY_SERVERS: rustdesk-hbbr:21117
+      RELAY_SERVERS: rustdesk-hbbr:21117
+    volumes:
+      - public-applications_rustdesk_data:/root
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      # HTTP API (rd-api.${DOMAIN})
+      - traefik.http.routers.rustdesk-api.rule=Host(`rd-api.${DOMAIN}`)
+      - traefik.http.routers.rustdesk-api.entrypoints=websecure
+      - traefik.http.routers.rustdesk-api.middlewares=hsts@docker
+      - traefik.http.routers.rustdesk-api.tls=true
+      - traefik.http.routers.rustdesk-api.tls.certresolver=le
+      - traefik.http.services.rustdesk-api.loadbalancer.server.port=21118
+      # raw TCP/UDP relayed via dedicated traefik entrypoints
+      - traefik.tcp.routers.hbbs-21115.entrypoints=rustdesk-21115-tcp
+      - traefik.tcp.routers.hbbs-21115.rule=HostSNI(`*`)
+      - traefik.tcp.routers.hbbs-21115.service=hbbs-21115
+      - traefik.tcp.services.hbbs-21115.loadbalancer.server.port=21115
+      - traefik.tcp.routers.hbbs-21116.entrypoints=rustdesk-21116-tcp
+      - traefik.tcp.routers.hbbs-21116.rule=HostSNI(`*`)
+      - traefik.tcp.routers.hbbs-21116.service=hbbs-21116
+      - traefik.tcp.services.hbbs-21116.loadbalancer.server.port=21116
+      - traefik.tcp.routers.hbbs-21118.entrypoints=rustdesk-21118-tcp
+      - traefik.tcp.routers.hbbs-21118.rule=HostSNI(`*`)
+      - traefik.tcp.routers.hbbs-21118.service=hbbs-21118
+      - traefik.tcp.services.hbbs-21118.loadbalancer.server.port=21118
+      - traefik.udp.routers.hbbs-21116.entrypoints=rustdesk-21116-udp
+      - traefik.udp.routers.hbbs-21116.service=hbbs-21116
+      - traefik.udp.services.hbbs-21116.loadbalancer.server.port=21116
+
+  rustdesk-hbbr:
+    image: rustdesk/rustdesk-server:latest
+    container_name: rustdesk-hbbr
+    restart: unless-stopped
+    networks: [infra_default]
+    command: ["hbbr"]
+    volumes:
+      - public-applications_rustdesk_data:/root
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.tcp.routers.hbbr-21117.entrypoints=rustdesk-21117-tcp
+      - traefik.tcp.routers.hbbr-21117.rule=HostSNI(`*`)
+      - traefik.tcp.routers.hbbr-21117.service=hbbr-21117
+      - traefik.tcp.services.hbbr-21117.loadbalancer.server.port=21117
+      - traefik.tcp.routers.hbbr-21119.entrypoints=rustdesk-21119-tcp
+      - traefik.tcp.routers.hbbr-21119.rule=HostSNI(`*`)
+      - traefik.tcp.routers.hbbr-21119.service=hbbr-21119
+      - traefik.tcp.services.hbbr-21119.loadbalancer.server.port=21119
+
+  stirling-pdf:
+    image: stirlingtools/stirling-pdf:latest-fat
+    container_name: stirling-pdf
+    restart: unless-stopped
+    networks: [infra_default]
+    environment:
+      DOCKER_ENABLE_SECURITY: "true"
+      SECURITY_ENABLELOGIN: "true"
+      SECURITY_LOGINMETHOD: normal
+      SECURITY_INITIALLOGIN_USERNAME: admin
+      SECURITY_INITIALLOGIN_PASSWORD: ${STIRLING_ADMIN_PASSWORD}
+      MODE: BOTH
+      TESSERACT_LANGS: eng,bul,fr
+      PUID: "1000"
+      PGID: "1000"
+      UMASK: "022"
+    volumes:
+      - public-applications_stirling_configs:/configs
+      - public-applications_stirling_custom:/customFiles
+      - public-applications_stirling_logs:/logs
+      - public-applications_stirling_pipeline:/pipeline
+      - public-applications_stirling_tessdata:/usr/share/tessdata
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.stirling.rule=Host(`stirlingpdf.${DOMAIN}`)
+      - traefik.http.routers.stirling.entrypoints=websecure
+      - traefik.http.routers.stirling.middlewares=fail2ban@docker,hsts@docker,stirling-sec-headers@docker,stirling-rate@docker,stirling-compress@docker,stirling-retry@docker
+      - traefik.http.routers.stirling.tls=true
+      - traefik.http.routers.stirling.tls.certresolver=le
+      - traefik.http.services.stirling.loadbalancer.passHostHeader=true
+      - traefik.http.services.stirling.loadbalancer.server.port=8080
+      - traefik.http.middlewares.stirling-compress.compress=true
+      - traefik.http.middlewares.stirling-rate.ratelimit.average=50
+      - traefik.http.middlewares.stirling-rate.ratelimit.burst=100
+      - traefik.http.middlewares.stirling-retry.retry.attempts=3
+      - traefik.http.middlewares.stirling-sec-headers.headers.browserXssFilter=true
+      - traefik.http.middlewares.stirling-sec-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.stirling-sec-headers.headers.frameDeny=true
+      - traefik.http.middlewares.stirling-sec-headers.headers.permissionsPolicy=geolocation=(), microphone=(), camera=()
+      - traefik.http.middlewares.stirling-sec-headers.headers.referrerPolicy=no-referrer
+      - traefik.http.middlewares.stirling-sec-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.stirling-sec-headers.headers.stsPreload=true
+      - traefik.http.middlewares.stirling-sec-headers.headers.stsSeconds=31536000
+
+  world-cup-pool:
+    # Locally-built image (source: https://github.com/oyvhov/world-cup-pool).
+    # Kept as the existing local image for pass 1; set up a Komodo Build in pass 2.
+    image: public-applications-world-cup-pool
+    pull_policy: never
+    # build: https://github.com/oyvhov/world-cup-pool.git   # enable to rebuild via compose/Komodo
+    container_name: world-cup-pool
+    restart: unless-stopped
+    networks: [infra_default]
+    command: ["serve", "--http=0.0.0.0:8090", "--dir=/pb_data"]
+    environment:
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY}
+      RESULTS_SOURCE: apifootball
+      WMP_DEV: "0"
+      PB_ADMIN_EMAIL: ${PB_ADMIN_EMAIL}
+      PB_ADMIN_PASSWORD: ${PB_ADMIN_PASSWORD}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+    volumes:
+      - public-applications_world_cup_pool_pb_data:/pb_data
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.worldcup.rule=Host(`worldcup.${DOMAIN}`)
+      - traefik.http.routers.worldcup.entrypoints=websecure
+      - traefik.http.routers.worldcup.middlewares=fail2ban@docker,hsts@docker
+      - traefik.http.routers.worldcup.service=worldcup
+      - traefik.http.routers.worldcup.tls=true
+      - traefik.http.routers.worldcup.tls.certresolver=le
+      - traefik.http.services.worldcup.loadbalancer.passhostheader=true
+      - traefik.http.services.worldcup.loadbalancer.server.port=8090

@@ -1,0 +1,85 @@
+# tools stack — dashy dashboard, glances monitoring, code-server IDE
+# Reconstructed 2026-06-18 from running containers. All on the shared infra_default network.
+
+networks:
+  infra_default:
+    external: true
+
+volumes:
+  tools_dashy_user_data:
+    external: true
+  tools_code_config:
+    external: true
+
+services:
+  dashy:
+    image: lissy93/dashy:latest
+    container_name: dashy
+    restart: unless-stopped
+    networks: [infra_default]
+    environment:
+      TZ: Europe/Sofia
+      NODE_ENV: production
+      IS_DOCKER: "true"
+      PORT: "8080"
+      HOST: 0.0.0.0
+    volumes:
+      - tools_dashy_user_data:/app/user-data
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.dashy.rule=Host(`dashy.${DOMAIN}`)
+      - traefik.http.routers.dashy.entrypoints=websecure
+      - traefik.http.routers.dashy.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.dashy.tls.certresolver=ovh
+      - traefik.http.services.dashy.loadbalancer.server.port=8080
+
+  glances:
+    image: nicolargo/glances:latest
+    container_name: glances
+    restart: unless-stopped
+    networks: [infra_default]
+    environment:
+      TZ: Europe/Sofia
+      PUID: "1000"
+      PGID: "1000"
+      GLANCES_OPT: "-w --time 10"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.glances.rule=Host(`glances.${DOMAIN}`)
+      - traefik.http.routers.glances.entrypoints=websecure
+      - traefik.http.routers.glances.middlewares=lanvpn-allow@docker
+      - traefik.http.routers.glances.tls.certresolver=ovh
+      - traefik.http.services.glances.loadbalancer.server.port=61208
+
+  vscode:
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: code-server
+    restart: unless-stopped
+    networks: [infra_default]
+    # SECURITY (pass 2): this mounts the entire host `/` at /host. Scope it down.
+    # HASHED_PASSWORD comes from .env via env_file (literal — its $ chars are not interpolated).
+    env_file:
+      - .env
+    environment:
+      PUID: "0"
+      PGID: "0"
+      TZ: Europe/Sofia
+      PWA_APPNAME: code-server
+      DEFAULT_WORKSPACE: /host/opt/stacks/
+    volumes:
+      - tools_code_config:/config
+      - /:/host
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.vscode.rule=Host(`code.${DOMAIN}`)
+      - traefik.http.routers.vscode.entrypoints=websecure
+      - traefik.http.routers.vscode.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.vscode.tls.certresolver=ovh
+      - traefik.http.services.vscode.loadbalancer.server.port=8443
+      - traefik.http.services.vscode.loadbalancer.server.scheme=https
+      - traefik.http.services.vscode.loadbalancer.serverstransport=insecure-code@file

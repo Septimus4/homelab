@@ -1,0 +1,19 @@
+{
+    "default_server_config": {
+        "m.homeserver": {
+            "base_url": "https://example.com",
+            "server_name": "example.com"
+        }
+    },
+    "element_call": {
+        "url": "https://call.example.com",
+        "participant_limit": 8,
+        "supports_v1_voip": true
+    },
+    "brand": "Element",
+    "integrations_ui_url": "https://scalar.vector.im/",
+    "integrations_rest_url": "https://scalar.vector.im/api",
+    "integrations_widgets_urls": [
+        "https://scalar.vector.im/api/widgets"
+    ]
+}

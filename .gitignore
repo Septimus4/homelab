@@ -1,0 +1,20 @@
+# real secrets — never commit (pass 2 will switch to SOPS-encrypted *.sops.env)
+**/.env
+!**/.env.example
+
+# credentials store
+.secrets/
+*.secret
+
+# komodo runtime env with real values
+komodo/compose.env
+
+# site-specific mounted configs (real values); commit only the *.example templates
+stacks/matrix/element-web/config.json
+stacks/matrix/element-call/config.json
+
+# editor / OS noise
+.DS_Store
+*.swp
+*.bak
+*.bak-*

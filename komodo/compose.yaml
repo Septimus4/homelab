@@ -1,0 +1,71 @@
+# Komodo Core + MongoDB + local Periphery (all-in-one, single host).
+# Based on the upstream mongo.compose.yaml. Runs alongside Portainer during migration.
+# Deploy: docker compose -p komodo --env-file komodo/compose.env -f komodo/compose.yaml up -d
+
+networks:
+  infra_default:
+    external: true
+
+services:
+  mongo:
+    image: mongo
+    container_name: komodo-mongo
+    labels:
+      komodo.skip:   # don't let Komodo stop its own DB
+    command: --quiet --wiredTigerCacheSizeGB 0.25
+    restart: unless-stopped
+    networks: [infra_default]
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${KOMODO_DATABASE_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${KOMODO_DATABASE_PASSWORD}
+
+  core:
+    image: ghcr.io/moghtech/komodo-core:${COMPOSE_KOMODO_IMAGE_TAG:-2}
+    container_name: komodo-core
+    init: true
+    restart: unless-stopped
+    networks: [infra_default]
+    depends_on:
+      - mongo
+    ports:
+      - "127.0.0.1:9120:9120"   # local API only; public access via Traefik label below
+    env_file: ./compose.env
+    environment:
+      KOMODO_DATABASE_ADDRESS: mongo:27017
+    volumes:
+      - keys:/config/keys
+      - ${COMPOSE_KOMODO_BACKUPS_PATH}:/backups
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.komodo.rule=Host(`komodo.${DOMAIN}`)
+      - traefik.http.routers.komodo.entrypoints=websecure
+      - traefik.http.routers.komodo.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.komodo.tls=true
+      - traefik.http.routers.komodo.tls.certresolver=ovh
+      - traefik.http.services.komodo.loadbalancer.server.port=9120
+
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:${COMPOSE_KOMODO_IMAGE_TAG:-2}
+    container_name: komodo-periphery
+    init: true
+    restart: unless-stopped
+    networks: [infra_default]
+    depends_on:
+      - core
+    env_file: ./compose.env
+    volumes:
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      - ${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}:${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}
+      # mount the git repo so Komodo can deploy "files on server" stacks from it
+      - ${HOMELAB_REPO_PATH}:/repo
+
+volumes:
+  mongo-data:
+  mongo-config:
+  keys:

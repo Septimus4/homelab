@@ -1,0 +1,168 @@
+# infra stack — Traefik edge, AdGuard, well-known
+# Vault + vault-agent were REMOVED (2026-06-18): their only job was supplying 4 static OVH
+# DNS-API creds to Traefik. Traefik (lego) now reads OVH_* directly from .env. Vault data
+# volumes (infra_vault_*) are retained on disk for reversibility but no longer referenced.
+
+networks:
+  infra_default:
+    external: true
+
+volumes:
+  infra_traefik_letsencrypt:
+    external: true
+  infra_traefik_dynamic:
+    external: true
+  infra_plugins_storage:
+    external: true
+  infra_adguard_conf:
+    external: true
+  infra_adguard_work:
+    external: true
+  infra_wellknown_data:
+    external: true
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    networks: [infra_default]
+    # OVH dns-challenge creds (OVH_*) read natively by lego from this env file.
+    env_file:
+      - .env
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=infra_default
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.federation.address=:8448
+      - --entrypoints.rustdesk-21115-tcp.address=:21115/tcp
+      - --entrypoints.rustdesk-21116-tcp.address=:21116/tcp
+      - --entrypoints.rustdesk-21116-udp.address=:21116/udp
+      - --entrypoints.rustdesk-21117-tcp.address=:21117/tcp
+      - --entrypoints.rustdesk-21118-tcp.address=:21118/tcp
+      - --entrypoints.rustdesk-21119-tcp.address=:21119/tcp
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=william.leroux@outlook.fr
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.ovh.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53,9.9.9.9:53
+      - --certificatesresolvers.ovh.acme.dnschallenge=true
+      - --certificatesresolvers.ovh.acme.dnschallenge.provider=ovh
+      - --certificatesresolvers.ovh.acme.dnschallenge.propagation.delaybeforechecks=120s
+      - --certificatesresolvers.ovh.acme.email=william.leroux@outlook.fr
+      - --certificatesresolvers.ovh.acme.storage=/letsencrypt/acme.json
+      - --log.level=INFO
+      - --accesslog=true
+      - --experimental.plugins.fail2ban.modulename=github.com/tomMoulard/fail2ban
+      - --experimental.plugins.fail2ban.version=v0.8.7
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8448:8448"
+      - "21115:21115/tcp"
+      - "21116:21116/tcp"
+      - "21116:21116/udp"
+      - "21117:21117/tcp"
+      - "21118:21118/tcp"
+      - "21119:21119/tcp"
+    volumes:
+      - infra_traefik_letsencrypt:/letsencrypt
+      - infra_traefik_dynamic:/etc/traefik/dynamic:ro
+      - infra_plugins_storage:/plugins-storage
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      # --- middlewares defined on traefik itself (referenced elsewhere as @docker) ---
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.logLevel=INFO
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.allowlist.ip=127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.bantime=3h
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.enabled=true
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.findtime=10m
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.maxretry=6
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.statuscode=400,401,403-499
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.urlregexps[0].mode=block
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.urlregexps[0].regexp=/(wp-login|xmlrpc|\.env|\.git)
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.urlregexps[1].mode=allow
+      - traefik.http.middlewares.fail2ban.plugin.fail2ban.testData.rules.urlregexps[1].regexp=/healthz|/whoami|/metrics
+      - traefik.http.middlewares.hsts.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.hsts.headers.stsPreload=true
+      - traefik.http.middlewares.hsts.headers.stsSeconds=31536000
+      - traefik.http.middlewares.lanvpn-allow.ipallowlist.sourcerange=192.168.0.0/16,10.6.0.0/16,10.0.0.0/8,172.16.0.0/12
+      # --- traefik dashboard router ---
+      - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`)
+      - traefik.http.routers.traefik.entrypoints=websecure
+      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.routers.traefik.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.traefik.tls=true
+      - traefik.http.routers.traefik.tls.certresolver=le
+      # --- rustdesk relay-id host router (served by traefik on :443) ---
+      - traefik.http.routers.rustdesk-id.rule=Host(`rd-id.${DOMAIN}`)
+      - traefik.http.routers.rustdesk-id.entrypoints=websecure
+      - traefik.http.routers.rustdesk-id.middlewares=hsts@docker
+      - traefik.http.routers.rustdesk-id.tls=true
+      - traefik.http.routers.rustdesk-id.tls.certresolver=ovh
+
+  adguardhome:
+    image: adguard/adguardhome:latest
+    container_name: adguardhome
+    restart: unless-stopped
+    networks: [infra_default]
+    entrypoint: ["/opt/adguardhome/AdGuardHome"]
+    command: ["--no-check-update", "-c", "/opt/adguardhome/conf/AdGuardHome.yaml", "-w", "/opt/adguardhome/work"]
+    ports:
+      - "${SERVER_IP}:53:53/tcp"
+      - "${SERVER_IP}:53:53/udp"
+    volumes:
+      - infra_adguard_work:/opt/adguardhome/work
+      - infra_adguard_conf:/opt/adguardhome/conf
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.adguard.rule=Host(`adguard.${DOMAIN}`)
+      - traefik.http.routers.adguard.entrypoints=websecure
+      - traefik.http.routers.adguard.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.adguard.tls=true
+      - traefik.http.routers.adguard.tls.certresolver=ovh
+      - traefik.http.services.adguard.loadbalancer.server.port=80
+      - traefik.http.routers.doh.rule=Host(`dns.${DOMAIN}`) && Path(`/dns-query`)
+      - traefik.http.routers.doh.entrypoints=websecure
+      - traefik.http.routers.doh.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.doh.service=adguard@docker
+      - traefik.http.routers.doh.tls=true
+      - traefik.http.routers.doh.tls.certresolver=ovh
+
+  wellknown:
+    image: nginx:latest
+    container_name: wellknown
+    restart: unless-stopped
+    networks: [infra_default]
+    volumes:
+      - infra_wellknown_data:/usr/share/nginx/html/.well-known:ro
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.services.matrix-wellknown.loadbalancer.server.port=80
+      - traefik.http.routers.matrix-wellknown-client.rule=Host(`${DOMAIN}`) && PathPrefix(`/.well-known/matrix/client`)
+      - traefik.http.routers.matrix-wellknown-client.entrypoints=websecure
+      - traefik.http.routers.matrix-wellknown-client.middlewares=fail2ban@file,matrix-wellknown-headers@file
+      - traefik.http.routers.matrix-wellknown-client.service=matrix-wellknown
+      - traefik.http.routers.matrix-wellknown-client.tls=true
+      - traefik.http.routers.matrix-wellknown-client.tls.certresolver=le
+      - traefik.http.routers.matrix-wellknown-server.rule=Host(`${DOMAIN}`) && Path(`/.well-known/matrix/server`)
+      - traefik.http.routers.matrix-wellknown-server.entrypoints=websecure
+      - traefik.http.routers.matrix-wellknown-server.middlewares=fail2ban@file,matrix-wellknown-headers@file
+      - traefik.http.routers.matrix-wellknown-server.service=matrix-wellknown
+      - traefik.http.routers.matrix-wellknown-server.tls=true
+      - traefik.http.routers.matrix-wellknown-server.tls.certresolver=le
+      - traefik.http.routers.element-wellknown.rule=Host(`${DOMAIN}`) && Path(`/.well-known/element/element.json`)
+      - traefik.http.routers.element-wellknown.entrypoints=websecure
+      - traefik.http.routers.element-wellknown.middlewares=fail2ban@file,matrix-wellknown-headers@file
+      - traefik.http.routers.element-wellknown.service=matrix-wellknown
+      - traefik.http.routers.element-wellknown.tls=true
+      - traefik.http.routers.element-wellknown.tls.certresolver=le

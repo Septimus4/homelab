@@ -1,0 +1,238 @@
+# matrix stack — Synapse + Postgres + Element Web/Call + MatrixRTC (LiveKit)
+# Source of truth = this repo. Images pinned (2026-06-18). Secrets in .env (not rotated).
+# coturn REMOVED 2026-06-18: Element Call uses LiveKit only; LiveKit handles connectivity
+# (dual ICE candidates). See docs/matrix-rtc-review.md. coturn data volumes kept on disk.
+
+networks:
+  infra_default:
+    external: true
+
+volumes:
+  matrix_postgres_data:
+    external: true
+    name: matrix_matrix_postgres_data
+  matrix_synapse_data:
+    external: true
+    name: matrix_matrix_synapse_data
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: matrix-postgres
+    restart: unless-stopped
+    networks: [infra_default]
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: synapse
+      POSTGRES_INITDB_ARGS: "--encoding='UTF8' --lc-collate='C' --lc-ctype='C'"
+    volumes:
+      - matrix_postgres_data:/var/lib/postgresql/data
+    labels:
+      - traefik.enable=false
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse -h 127.0.0.1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  synapse:
+    image: ghcr.io/element-hq/synapse:v1.155.0
+    container_name: matrix-synapse
+    restart: unless-stopped
+    user: "1000:1000"
+    networks: [infra_default]
+    depends_on:
+      - postgres
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      SYNAPSE_SERVER_NAME: ${DOMAIN}
+    volumes:
+      - matrix_synapse_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8008/health'); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.services.matrix_synapse_http.loadbalancer.server.port=8008
+      - traefik.http.services.matrix_synapse_http.loadbalancer.healthcheck.path=/health
+      - traefik.http.services.matrix_synapse_http.loadbalancer.healthcheck.interval=10s
+      - traefik.http.services.matrix_synapse_http.loadbalancer.healthcheck.timeout=3s
+      # client + federation over 443
+      - traefik.http.routers.synapse-client.rule=Host(`${DOMAIN}`) && (PathPrefix(`/_matrix`) || PathPrefix(`/_synapse/client`))
+      - traefik.http.routers.synapse-client.entrypoints=websecure
+      - traefik.http.routers.synapse-client.service=matrix_synapse_http
+      - traefik.http.routers.synapse-client.middlewares=fail2ban@docker,hsts@docker
+      - traefik.http.routers.synapse-client.tls=true
+      - traefik.http.routers.synapse-client.tls.certresolver=le
+      # federation on :8448
+      - traefik.http.routers.synapse-federation-8448.rule=Host(`${DOMAIN}`) && PathPrefix(`/_matrix`)
+      - traefik.http.routers.synapse-federation-8448.entrypoints=federation
+      - traefik.http.routers.synapse-federation-8448.service=matrix_synapse_http
+      - traefik.http.routers.synapse-federation-8448.middlewares=fail2ban@docker,hsts@docker
+      - traefik.http.routers.synapse-federation-8448.tls=true
+      - traefik.http.routers.synapse-federation-8448.tls.certresolver=le
+      # synapse admin API (LAN/VPN only) + CORS for synapse-admin UI
+      - traefik.http.middlewares.synapse-admin-cors.headers.accessControlAllowOriginList=https://synapse-admin.${DOMAIN}
+      - traefik.http.middlewares.synapse-admin-cors.headers.accessControlAllowMethods=GET,POST,PUT,PATCH,DELETE,OPTIONS
+      - traefik.http.middlewares.synapse-admin-cors.headers.accessControlAllowHeaders=Authorization,Content-Type
+      - traefik.http.middlewares.synapse-admin-cors.headers.accessControlAllowCredentials=true
+      - traefik.http.middlewares.synapse-admin-cors.headers.accessControlMaxAge=86400
+      - traefik.http.routers.synapse-admin-api.rule=Host(`${DOMAIN}`) && PathPrefix(`/_synapse/admin`)
+      - traefik.http.routers.synapse-admin-api.entrypoints=websecure
+      - traefik.http.routers.synapse-admin-api.service=matrix_synapse_http
+      - traefik.http.routers.synapse-admin-api.middlewares=lanvpn-allow@docker,synapse-admin-cors@docker
+      - traefik.http.routers.synapse-admin-api.tls=true
+      - traefik.http.routers.synapse-admin-api.tls.certresolver=le
+
+  element-web:
+    image: ghcr.io/element-hq/element-web:v1.12.21
+    container_name: matrix-element-web
+    restart: unless-stopped
+    networks: [infra_default]
+    volumes:
+      - ./element-web/config.json:/app/config.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.element-web.rule=Host(`element.${DOMAIN}`)
+      - traefik.http.routers.element-web.entrypoints=websecure
+      - traefik.http.routers.element-web.middlewares=fail2ban@docker,hsts@docker
+      - traefik.http.routers.element-web.tls=true
+      - traefik.http.routers.element-web.tls.certresolver=le
+      - traefik.http.services.element-web.loadbalancer.server.port=80
+      - traefik.http.services.element-web.loadbalancer.healthcheck.path=/
+      - traefik.http.services.element-web.loadbalancer.healthcheck.interval=15s
+      - traefik.http.services.element-web.loadbalancer.healthcheck.timeout=3s
+
+  element-call:
+    image: ghcr.io/element-hq/element-call:v0.20.2-rc.1   # current :latest (RC); move to stable when released
+    container_name: matrix-element-call
+    restart: unless-stopped
+    networks: [infra_default]
+    # NOTE: the running container does NOT mount a config.json (uses image default).
+    # element-call/config.json is vendored in this repo for reference; mount it in pass 2
+    # if call config needs to be customised:
+    #   volumes:
+    #     - ./element-call/config.json:/app/config.json:ro
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.element-call.rule=Host(`call.${DOMAIN}`)
+      - traefik.http.routers.element-call.entrypoints=websecure
+      - traefik.http.routers.element-call.middlewares=fail2ban@docker,hsts@docker
+      - traefik.http.routers.element-call.tls=true
+      - traefik.http.routers.element-call.tls.certresolver=le
+      - traefik.http.services.element-call.loadbalancer.server.port=8080
+
+  synapse-admin:
+    image: awesometechnologies/synapse-admin:latest
+    container_name: synapse-admin
+    restart: unless-stopped
+    networks: [infra_default]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.routers.synapse-admin.rule=Host(`synapse-admin.${DOMAIN}`)
+      - traefik.http.routers.synapse-admin.entrypoints=websecure
+      - traefik.http.routers.synapse-admin.middlewares=lanvpn-allow@docker,hsts@docker
+      - traefik.http.routers.synapse-admin.tls=true
+      - traefik.http.routers.synapse-admin.tls.certresolver=ovh
+      - traefik.http.services.synapse-admin.loadbalancer.server.port=80
+
+  lk-jwt-service:
+    image: ghcr.io/element-hq/lk-jwt-service:0.5.0
+    container_name: matrix-lk-jwt-service
+    restart: unless-stopped
+    networks: [infra_default]
+    environment:
+      LIVEKIT_URL: wss://matrix-rtc.${DOMAIN}/livekit/sfu
+      LIVEKIT_KEY: ${LIVEKIT_KEY}
+      LIVEKIT_SECRET: ${LIVEKIT_SECRET}
+      LIVEKIT_JWT_BIND: ":8080"   # replaces deprecated LIVEKIT_JWT_PORT
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: ${DOMAIN}
+      LIVEKIT_SANITY_CHECK_INTERVAL_SECONDS: "30"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=infra_default
+      - traefik.http.services.lk-jwt.loadbalancer.server.port=8080
+      - traefik.http.middlewares.matrixrtc-cors.headers.accessControlAllowOriginList=https://element.${DOMAIN},https://call.${DOMAIN},https://call.element.io,https://call.element.dev,https://app.element.io,https://appassets.androidplatform.net,vector://vector
+      - traefik.http.middlewares.matrixrtc-cors.headers.accessControlAllowMethods=GET,POST,OPTIONS
+      - traefik.http.middlewares.matrixrtc-cors.headers.accessControlAllowHeaders=Authorization,Content-Type,Accept,Origin,X-Requested-With,Traceparent,Tracestate
+      - traefik.http.middlewares.matrixrtc-cors.headers.accessControlAllowCredentials=true
+      - traefik.http.middlewares.matrixrtc-cors.headers.accessControlMaxAge=86400
+      - traefik.http.middlewares.matrixrtc-cors.headers.addVaryHeader=true
+      - traefik.http.middlewares.lk-jwt-prefix-strip.stripprefix.prefixes=/livekit/jwt
+      - traefik.http.routers.lk-jwt-prefixed.rule=Host(`matrix-rtc.${DOMAIN}`) && PathPrefix(`/livekit/jwt`)
+      - traefik.http.routers.lk-jwt-prefixed.entrypoints=websecure
+      - traefik.http.routers.lk-jwt-prefixed.service=lk-jwt
+      - traefik.http.routers.lk-jwt-prefixed.middlewares=matrixrtc-cors@docker,lk-jwt-prefix-strip@docker,hsts@docker
+      - traefik.http.routers.lk-jwt-prefixed.priority=300
+      - traefik.http.routers.lk-jwt-prefixed.tls=true
+      - traefik.http.routers.lk-jwt-prefixed.tls.certresolver=le
+      - traefik.http.routers.lk-jwt-root.rule=Host(`matrix-rtc.${DOMAIN}`) && (Path(`/get_token`) || Path(`/sfu/get`) || Path(`/sfu_webhook`) || Path(`/healthz`) || Path(`/delegate_delayed_leave`))
+      - traefik.http.routers.lk-jwt-root.entrypoints=websecure
+      - traefik.http.routers.lk-jwt-root.service=lk-jwt
+      - traefik.http.routers.lk-jwt-root.middlewares=matrixrtc-cors@docker,hsts@docker
+      - traefik.http.routers.lk-jwt-root.priority=200
+      - traefik.http.routers.lk-jwt-root.tls=true
+      - traefik.http.routers.lk-jwt-root.tls.certresolver=le
+
+  livekit:
+    image: livekit/livekit-server:v1.13.1
+    container_name: livekit
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+
+        bind_addresses:
+          - ""
+
+        room:
+          # gated by lk-jwt-service + LIVEKIT_FULL_ACCESS_HOMESERVERS (recommended)
+          auto_create: false
+
+        rtc:
+          tcp_port: 7881
+          port_range_start: 52000
+          port_range_end: 52127
+          # Advertise BOTH a LAN host candidate (the server's LAN IP, direct for internal
+          # clients) and the public IP via STUN (srflx, for external clients). Do NOT set
+          # external_ip_only/node_ip — that suppressed the LAN candidate and broke internal calls.
+          use_external_ip: true
+          stun_servers:
+            - stun.l.google.com:19302
+            - stun1.l.google.com:19302
+          enable_loopback_candidate: false
+          # Restrict ICE gathering to the real host NIC so LiveKit stops advertising
+          # docker-bridge (172.x / br-*) IPs as junk candidates that slow call setup.
+          interfaces:
+            includes:
+              - ${HOST_NIC}
+
+        webhook:
+          api_key: ${LIVEKIT_KEY}
+          urls:
+            - https://matrix-rtc.${DOMAIN}/livekit/jwt/sfu_webhook
+
+        keys:
+          "${LIVEKIT_KEY}": "${LIVEKIT_SECRET}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7880/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
