@@ -1,0 +1,98 @@
+# games stack — CS2 (kus modded) + Ships At Sea dedicated server
+# Deploy with: docker compose -p games --env-file stacks/games/.env \
+#   -f stacks/games/compose.yaml up -d
+#
+# Game servers are NOT proxied by Traefik: they publish their UDP/TCP ports
+# directly to the host and live on the stack's own `games_default` network
+# (not infra_default), so Traefik never sees them.
+#
+# Volumes are external with stable names (repo convention) — create once:
+#   docker volume create games_cs2_data
+#   docker volume create games_sas_data
+
+volumes:
+  games_cs2_data:
+    external: true
+  games_sas_data:
+    external: true
+  games_sas_steam:        # persists steamcmd's Steam Guard token/sentry (/home/steam/Steam)
+    external: true
+
+services:
+  # --- Counter-Strike 2, modded (Metamod + CounterStrikeSharp + plugin bundle) ---
+  # https://github.com/kus/cs2-modded-server  (prebuilt image bundles the whole mod;
+  # install_docker.sh downloads CS2 via steamcmd into /home/steam/cs2 on first boot,
+  # layers the mod over it, merges /home/custom_files/, then starts the server).
+  cs2:
+    image: ghcr.io/kus/cs2-modded-server:latest
+    container_name: cs2
+    restart: unless-stopped
+    # CS2's sandbox needs user namespaces; relax seccomp so the bwrap sandbox starts
+    # inside the container (CS2 dedicated otherwise aborts on some Docker hosts).
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      PORT: "27015"
+      TICKRATE: "128"
+      MAXPLAYERS: "10"
+      LAN: "0"
+      EXEC: on_boot.cfg
+      # Preserve the previous server's competitive character (was de_inferno / comp).
+      # Blank these to fall back to kus defaults (de_dust2, casual + in-game mode vote).
+      MAP: de_inferno
+      GAME_TYPE: "0"
+      GAME_MODE: "1"
+      MAP_GROUP: mg_active
+      # Secrets / identity (see stacks/games/.env)
+      RCON_PASSWORD: ${CS2_RCON_PASSWORD}
+      SERVER_PASSWORD: ${CS2_PASSWORD}
+      STEAM_ACCOUNT: ${CS2_GSLT}          # GSLT — carried over from the old server
+      API_KEY: ${CS2_STEAM_API_KEY}        # Steam Web API key; only needed for workshop maps
+    volumes:
+      - games_cs2_data:/home/steam/        # CS2 install (~30GB, re-downloaded on first boot)
+      - ./cs2/custom_files:/home/custom_files/   # overrides merged into csgo/ (sets hostname)
+    ports:
+      - "27015:27015/tcp"   # game + RCON (source RCON on the game port)
+      - "27015:27015/udp"   # game
+      - "27020:27020/tcp"   # GOTV / query
+      - "27020:27020/udp"
+    # CS2 wants a few GB; keep it from starving the host.
+    mem_limit: 4g
+
+  # --- Ships At Sea dedicated server (v0.8.7 public test, native Linux) ---
+  # Custom image: steamcmd downloads app 3951240 on the configured beta branch,
+  # seeds the config, and auto-detects the Linux launcher. See images/ships-at-sea/.
+  ships-at-sea:
+    build: ../../images/ships-at-sea
+    image: games-ships-at-sea
+    container_name: ships-at-sea
+    restart: unless-stopped
+    environment:
+      # Public-test branch is hidden (not in app_info). `public_test` is accepted by
+      # steamcmd; PASSWORD SaSPublicTest is from the v0.8.7 announcement. The branch's
+      # depots require an account that OWNS Ships At Sea (anonymous => "Missing
+      # configuration"), so set SAS_STEAM_USER/PASS in .env for the server to install.
+      SAS_BETA: ${SAS_BETA}
+      SAS_BETA_PASSWORD: ${SAS_BETA_PASSWORD}
+      # Anonymous login if blank — but the public_test branch needs an owning account.
+      STEAM_USER: ${SAS_STEAM_USER}
+      STEAM_PASS: ${SAS_STEAM_PASS}
+      SAS_SERVER_NAME: ${SAS_SERVER_NAME}
+      SAS_MAXPLAYERS: "16"
+      SAS_PASSWORD: ${SAS_PASSWORD}
+      SAS_PORT: "7777"
+      SAS_QUERY_PORT: "15000"
+      # Override if auto-detection picks the wrong binary, e.g. SASServer.sh
+      SAS_LAUNCH: ${SAS_LAUNCH}
+      SAS_EXTRA_ARGS: ${SAS_EXTRA_ARGS}
+    volumes:
+      - games_sas_data:/home/steam/sas
+      - games_sas_steam:/home/steam/Steam     # steamcmd config / cached Steam Guard token
+    ports:
+      - "7777:7777/tcp"      # game
+      - "7777:7777/udp"
+      - "15000:15000/tcp"    # Steam query
+      - "15000:15000/udp"
+      - "15001:15001/tcp"    # UE pre-join beacon (BeaconNetDriver)
+      - "15001:15001/udp"
+    mem_limit: 6g

@@ -14,6 +14,7 @@ Everything site-specific (domain, IPs, host NIC, paths) is externalized to gitig
 | `matrix` | Synapse, PostgreSQL, Element Web, Element Call, MatrixRTC (LiveKit SFU + lk-jwt-service), synapse-admin |
 | `tools` | Dashy (dashboard), Glances (monitoring), code-server (browser IDE) |
 | `public-applications` | Yopass, RustDesk relay (hbbs/hbbr), Stirling-PDF, Memcached, a PocketBase app |
+| `games` | CS2 dedicated server (kus modded), Ships At Sea dedicated server |
 | `komodo` | Komodo Core + MongoDB + Periphery (the GitOps control plane) |
 
 A full Matrix + Element Call / LiveKit deployment guide lives in
@@ -39,8 +40,10 @@ stacks/
   tools/                 dashy, glances, code-server
   public-applications/   yopass, rustdesk (hbbs/hbbr), stirling-pdf,
                          memcached, pocketbase app
+  games/                 cs2 (kus modded), ships-at-sea (+ cs2/custom_files overrides)
 komodo/                  Komodo deployment (compose + env template)
 images/                  custom image build contexts
+  ships-at-sea/          Dockerfile + entrypoint for the Ships At Sea server
 docs/                    deployment notes / guides
 ```
 
@@ -65,7 +68,7 @@ cd homelab
 docker network create infra_default
 
 # 2. per stack: create real env from the template and fill it in
-for s in infra matrix tools public-applications; do
+for s in infra matrix tools public-applications games; do
   cp "stacks/$s/.env.example" "stacks/$s/.env"   # then edit stacks/$s/.env
 done
 cp komodo/compose.env.example komodo/compose.env  # then edit
