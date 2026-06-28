@@ -78,10 +78,11 @@ services:
       STEAM_USER: ${SAS_STEAM_USER}
       STEAM_PASS: ${SAS_STEAM_PASS}
       SAS_SERVER_NAME: ${SAS_SERVER_NAME}
+      SAS_DESCRIPTION: ${SAS_DESCRIPTION}
       SAS_MAXPLAYERS: "16"
-      SAS_PASSWORD: ${SAS_PASSWORD}
+      # Official launch ports (SAS/Binaries/.../Readme.txt): -port (game) + -beaconport (join).
       SAS_PORT: "7777"
-      SAS_QUERY_PORT: "15000"
+      SAS_BEACON_PORT: "15000"
       # Override if auto-detection picks the wrong binary, e.g. SASServer.sh
       SAS_LAUNCH: ${SAS_LAUNCH}
       SAS_EXTRA_ARGS: ${SAS_EXTRA_ARGS}
@@ -89,10 +90,8 @@ services:
       - games_sas_data:/home/steam/sas
       - games_sas_steam:/home/steam/Steam     # steamcmd config / cached Steam Guard token
     ports:
-      - "7777:7777/tcp"      # game
+      - "7777:7777/tcp"       # game
       - "7777:7777/udp"
-      - "15000:15000/tcp"    # Steam query
+      - "15000:15000/tcp"     # join beacon (-beaconport)
       - "15000:15000/udp"
-      - "15001:15001/tcp"    # UE pre-join beacon (BeaconNetDriver)
-      - "15001:15001/udp"
     mem_limit: 6g

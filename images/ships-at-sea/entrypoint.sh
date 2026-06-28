@@ -82,13 +82,12 @@ CFG_FILE="${CFG_DIR}/DedicatedServerSettings.ini"
 if [[ ! -f "${CFG_FILE}" ]]; then
   echo "==> Seeding ${CFG_FILE}"
   mkdir -p "${CFG_DIR}"
+  # Schema per the shipped Example_DedicatedServerSettings.ini — only these 3 keys exist.
   {
     echo "[/Script/Sas.DedicatedServerSettings]"
     echo "DedicatedServerName=${SAS_SERVER_NAME:-Ships At Sea}"
-    # The keys below are best-effort (only DedicatedServerName is documented). Edit the
-    # persisted file (volume games_sas_data) to match the example the server ships.
-    [[ -n "${SAS_MAXPLAYERS:-}" ]] && echo "MaxPlayers=${SAS_MAXPLAYERS}"
-    [[ -n "${SAS_PASSWORD:-}" ]]   && echo "ServerPassword=${SAS_PASSWORD}"
+    [[ -n "${SAS_MAXPLAYERS:-}" ]]  && echo "MaxPlayers=${SAS_MAXPLAYERS}"
+    [[ -n "${SAS_DESCRIPTION:-}" ]] && echo "DedicatedServerDescription=${SAS_DESCRIPTION}"
   } > "${CFG_FILE}"
 else
   echo "==> Existing ${CFG_FILE} found — leaving it untouched."
@@ -117,8 +116,10 @@ fi
 chmod +x "${launch}" 2>/dev/null || true
 
 echo "==> Launching: ${launch}"
+# Official launch args (SAS/Binaries/.../Readme.txt): -port (game) + -beaconport (join beacon).
+# NOTE: it's -beaconport, NOT -QueryPort — the wrong flag leaves the beacon on its default 15001.
 # shellcheck disable=SC2086  # SAS_EXTRA_ARGS is intentionally word-split
 exec "${launch}" \
-  -Port="${SAS_PORT:-7777}" \
-  -QueryPort="${SAS_QUERY_PORT:-15000}" \
+  -port="${SAS_PORT:-7777}" \
+  -beaconport="${SAS_BEACON_PORT:-15000}" \
   -log ${SAS_EXTRA_ARGS:-}
