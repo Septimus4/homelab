@@ -9,9 +9,12 @@
 # komodo runtime env with real values
 komodo/compose.env
 
-# site-specific mounted configs (real values); commit only the *.example templates
-stacks/matrix/element-web/config.json
-stacks/matrix/element-call/config.json
+# NOTE: element-web/element-call config.json are COMMITTED (not ignored).
+# They hold only public client config (the public homeserver/call URLs that
+# element-web serves to every browser anyway) — no secrets. They MUST be in
+# the repo so the Komodo GitOps clone has them; otherwise the bind-mount
+# source is missing and Docker creates an empty *directory* there, which
+# fails with "not a directory" on container start.
 
 # editor / OS noise
 .DS_Store
