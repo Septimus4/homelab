@@ -96,7 +96,12 @@ services:
     restart: unless-stopped
     networks: [infra_default]
     volumes:
-      - ./element-web/config.json:/app/config.json:ro
+      # MUST be an absolute host path, not "./...". Komodo's periphery runs compose
+      # with the repo bind-mounted at /repo (≠ its host path), so a relative source
+      # resolves to /repo/... which the host daemon can't see → it creates an empty
+      # dir there and the mount fails ("not a directory"). HOMELAB_REPO_PATH is the
+      # repo's real host path; absolute sources are passed to the daemon verbatim.
+      - ${HOMELAB_REPO_PATH}/stacks/matrix/element-web/config.json:/app/config.json:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
       interval: 1m
